@@ -1,0 +1,179 @@
+---
+title: "FinalProj"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+raw_data <- read.csv("train.csv")
+```
+
+
+## Data cleaning
+```{r}
+colSums(is.na(raw_data))
+```
+
+```{r}
+data <- raw_data %>% replace_na(list(PoolQC = "None", 
+                                     Fence = "None", 
+                                     MiscFeature = "None"))
+data <- data %>% replace_na(list(GarageFinish = "None",
+                                     GarageQual = "None", 
+                                     GarageCond = "None",
+                                     GarageType = "None",
+                                     GarageYrBlt = 0,
+                                     FireplaceQu = "None"))
+data <- data %>% replace_na(list(Electrical = "None",
+                                     BsmtFinType2 = "None", 
+                                     BsmtFinType1 = "None",
+                                     BsmtExposure = "None",
+                                     BsmtQual = "None",
+                                     BsmtCond = "None"))
+data <- data %>% replace_na(list(MasVnrArea = 0,
+                                     MasVnrType = "None", 
+                                     Alley = "None",
+                                     LotFrontage = 0))
+colSums(is.na(data))
+```
+
+
+## Data exploration 
+```{r}
+library(ggplot2)
+library(ggcorrplot)
+data_corr <- data %>% select(LotFrontage, LotArea, YearBuilt, 
+                              YearRemodAdd, MasVnrArea, BsmtFinSF1,
+                              BsmtFinSF2, BsmtUnfSF, TotalBsmtSF,
+                              X1stFlrSF, X2ndFlrSF, LowQualFinSF,
+                              GrLivArea, BsmtFullBath, BsmtHalfBath,
+                              FullBath, HalfBath, BedroomAbvGr,
+                              KitchenAbvGr, TotRmsAbvGrd, Fireplaces,
+                              GarageYrBlt, GarageCars, GarageArea,
+                              WoodDeckSF, OpenPorchSF, EnclosedPorch,
+                              X3SsnPorch, ScreenPorch, PoolArea,
+                              MiscVal, YrSold, MSSubClass, 
+                              OverallQual, OverallCond, SalePrice)
+correlations <- cor(data_corr)
+ggcorrplot(round(correlations,2), lab = TRUE, tl.cex = 6, lab_size = 1, type = "lower")
+```
+Selected all continous variables and the three ordinal variables (MSSubClass, OverallQual and OverallCond) for the correlation plot. The last column SalePrice is the most important in the plot, we can see which variables are most correlated to the target and explain it the most. Overall Quality and total above ground square feet are the most correlated.
+
+
+
+## Lasso
+```{r}
+library(glmnet)
+
+data <- data %>% mutate_if(is.character,as.factor)
+data$MSSubClass <- as.factor(data$MSSubClass)
+
+#data <- data[-1299,]
+
+train <- data[1:1100,]
+train <- train[,-1]
+test <- data[1101:1459,]
+test <- test[,-1]
+
+train$SalePrice <- log(train$SalePrice)
+test$SalePrice <- log(test$SalePrice)
+
+#rain_x <- model.matrix(train[,-c(1,81)])
+train_x <- model.matrix(SalePrice ~ .,train)[,-81]
+#test_x <- model.matrix(test[,-c(1,81)])
+test_x <- model.matrix(SalePrice ~ .,test)[,-81]
+
+lasso_cv <- cv.glmnet(train_x,train$SalePrice, alpha = 1)
+plot(lasso_cv)
+
+lasso_cv$lambda.min
+
+lasso.pred=predict(lasso_cv,s=lasso_cv$lambda.min,newx=test_x)
+#mean( (exp(lasso.pred)-exp(test$SalePrice))^2 ) 
+
+#diff <- exp(lasso.pred)-exp(test$SalePrice)
+
+diff <- data.frame(predictions = lasso.pred)
+diff$residuals <- lasso.pred - test$SalePrice
+
+diff$residab <- abs(diff$residuals)
+diff$sq <- (diff$residuals * diff$residuals)
+
+mean(diff$residab)
+
+library(ggplot2)
+ggplot(data = diff) + geom_point(mapping = aes(x=X1, y=residuals)) + 
+  geom_abline(intercept = 0, slope = 0, colour = "red") + 
+  ggtitle("Residual plot for Lasso Regression w/ outliers removed") + 
+  xlab("predictions")
+
+
+```
+
+```{r}
+model <- glmnet(train_x,train$SalePrice, alpha = 1, lambda = lasso_cv$lambda.min)
+coef(model)
+```
+
+```{r}
+train_temp <- model.matrix(~.,train)
+train_temp <- as.data.frame(train_temp)
+lm <- lm(SalePrice ~ .,data=train_temp)
+summary(lm)
+```
+
+```{r}
+test_temp <- model.matrix(~ .,test)
+test_temp <- as.data.frame(test_temp)
+test_temp <- test_temp[-199,]
+library(caret)
+predictions = predict(lm, newdata = test_temp)
+```
+
+```{r}
+diff3 <- data.frame(predictions = predictions)
+tempSalePrice <- test$SalePrice
+tempSalePrice <- tempSalePrice[-199]
+#diff3$predictions <- exp(diff3$predictions)
+diff3$residuals <- predictions - tempSalePrice
+
+diff3$residab <- abs(diff3$residuals)
+diff3$sq <- (diff3$residuals * diff3$residuals)
+#diff3 <- diff3 %>% mutate(sq = residuals^2)
+
+mean(diff3$residab)
+
+
+#diff3 <- diff3[-199,]
+
+
+
+
+#mean(diff3$residab)
+ggplot(data = diff3) + geom_point(mapping = aes(x=predictions, y=residuals)) + 
+  geom_abline(intercept = 0, slope = 0, colour = "red") + 
+  ggtitle("Residual plot for OLS Regression w/ outliers removed")
+```
+
+
+```{r}
+par(mfrow=c(1,4))
+plot(train$X1stFlrSF,train$SalePrice)
+plot(train$OverallQual,train$SalePrice)
+plot(train$GrLivArea,train$SalePrice)
+plot(train$GarageArea,train$SalePrice)
+```
+```{r}
+train2 <- data[0:1458,]
+train_temp2 <- model.matrix(~.,train2)
+train_temp2 <- as.data.frame(train_temp2)
+lm2 <- lm(SalePrice ~ .,data=train_temp2)
+predictions2 <- predict(lm2)
+residuals2 <- predictions2 - train2$SalePrice
+plot(predictions2,residuals2)
+```
+
